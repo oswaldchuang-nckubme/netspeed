@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0E1A22">
+<title>網速計</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="網速計">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700&display=swap">
+<style>
+:root{
+  --bg:#E8EEF1; --ink:#10222D; --mute:#5B7080; --track:#CAD6DD; --accent:#E8501A; --card:#F6F9FA;
+  --font:"Bricolage Grotesque","PingFang TC","Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif;
+  color-scheme:light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){--bg:#0E1A22;--ink:#EAF1F4;--mute:#8CA2B0;--track:#24384553;--accent:#FF7A45;--card:#15262F;color-scheme:dark}
+}
+:root[data-theme="dark"]{--bg:#0E1A22;--ink:#EAF1F4;--mute:#8CA2B0;--track:#243845;--accent:#FF7A45;--card:#15262F;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--font);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:28px;padding:20px;-webkit-tap-highlight-color:transparent}
+h1{font-size:20px;font-weight:700;margin:0;letter-spacing:.02em}
+.dial{position:relative;width:min(78vw,300px);aspect-ratio:1;border:0;background:none;padding:0;cursor:pointer;color:inherit;font:inherit;border-radius:50%}
+.dial:focus-visible{outline:3px solid var(--accent);outline-offset:6px}
+.dial svg{width:100%;height:100%;transform:rotate(135deg)}
+.dial circle{fill:none;stroke-width:16;stroke-linecap:round}
+.dial .track{stroke:var(--track)}
+.dial .bar{stroke:var(--accent);transition:stroke-dashoffset .12s linear}
+.center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+.num{font-size:clamp(52px,17vw,76px);font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+.unit{font-size:16px;color:var(--mute)}
+.cta{margin-top:10px;font-size:15px;font-weight:700;background:var(--ink);color:var(--bg);padding:9px 22px;border-radius:999px}
+.dial[disabled]{cursor:progress}
+.dial[disabled] .cta{background:var(--track);color:var(--mute)}
+.dial.busy .bar{animation:pulse 1s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.45}}
+@media (prefers-reduced-motion:reduce){.dial.busy .bar{animation:none}.dial .bar{transition:none}}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;width:min(92vw,360px)}
+.stat{background:var(--card);border-radius:14px;padding:12px 10px;text-align:center}
+.stat b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+.stat span{font-size:12px;color:var(--mute)}
+#msg{min-height:20px;margin:0;font-size:13px;color:var(--mute);text-align:center;max-width:90vw}
+</style>
+</head>
+<body>
+<h1>目前網路速度</h1>
+
+<button class="dial" id="btn" type="button" aria-live="polite">
+  <svg viewBox="0 0 260 260" aria-hidden="true">
+    <circle class="track" cx="130" cy="130" r="110" id="trk"/>
+    <circle class="bar" cx="130" cy="130" r="110" id="bar"/>
+  </svg>
+  <div class="center">
+    <div class="num" id="num">--</div>
+    <div class="unit">Mbps</div>
+    <div class="cta" id="cta">開始測速</div>
+  </div>
+</button>
+
+<div class="stats">
+  <div class="stat"><b id="lat">--</b><span>延遲 ms</span></div>
+  <div class="stat"><b id="eff">--</b><span>連線類型</span></div>
+  <div class="stat"><b id="est">--</b><span>系統估計 Mbps</span></div>
+</div>
+<p id="msg">按下圓盤，測量此刻的下載速度。</p>
+
+<script>
+(function(){
+  var BASE="https://cdnjs.cloudflare.com/ajax/libs/";
+  var FILES=[
+    {p:"three.js/r128/three.min.js",fb:140000},
+    {p:"d3/7.8.5/d3.min.js",fb:90000},
+    {p:"Chart.js/4.4.1/chart.umd.min.js",fb:70000}
+  ];
+  var C=2*Math.PI*110, ARC=C*0.75, MAXLOG=Math.log10(1000);
+  var btn=document.getElementById("btn"), bar=document.getElementById("bar"), trk=document.getElementById("trk");
+  var num=document.getElementById("num"), cta=document.getElementById("cta"), msg=document.getElementById("msg");
+  var lat=document.getElementById("lat"), eff=document.getElementById("eff"), est=document.getElementById("est");
+  var shown=0, raf=0;
+
+  [bar,trk].forEach(function(c){c.setAttribute("stroke-dasharray",ARC+" "+C)});
+  trk.setAttribute("stroke-dashoffset",0);
+
+  function ratio(v){ if(v<=0) return 0; return Math.min(1,Math.max(0,(Math.log10(v)+0.0)/MAXLOG)); }
+  function draw(v){
+    shown=v;
+    bar.setAttribute("stroke-dashoffset",ARC*(1-ratio(v)));
+    num.textContent=v>=100?Math.round(v):v.toFixed(1);
+  }
+  function tween(to){
+    cancelAnimationFrame(raf);
+    var from=shown,t0=performance.now(),d=900;
+    (function step(t){
+      var k=Math.min(1,(t-t0)/d); k=1-Math.pow(1-k,3);
+      draw(from+(to-from)*k);
+      if(k<1) raf=requestAnimationFrame(step);
+    })(t0);
+  }
+
+  function netInfo(){
+    var c=navigator.connection||navigator.mozConnection||navigator.webkitConnection;
+    if(c){
+      eff.textContent=(c.effectiveType||"--").toUpperCase();
+      est.textContent=c.downlink!=null?c.downlink:"--";
+    }else{
+      eff.textContent="不支援"; est.textContent="--";
+    }
+  }
+  netInfo();
+
+  function loadOne(f){
+    return new Promise(function(res){
+      var url=BASE+f.p+"?nocache="+Date.now()+Math.random().toString(36).slice(2);
+      var s=document.createElement("script"), t0=performance.now();
+      function done(ok){
+        var e=performance.getEntriesByName(url)[0], out={ok:ok,bytes:0,ms:performance.now()-t0,ttfb:0,exact:false};
+        if(e){
+          var b=e.transferSize||e.encodedBodySize;
+          if(b>0){out.bytes=b;out.exact=true;}
+          var d=e.responseEnd-e.startTime; if(d>0) out.ms=d;
+          var w=e.responseStart-e.requestStart; if(w>0) out.ttfb=w;
+        }
+        if(!out.bytes) out.bytes=f.fb;
+        s.remove(); res(out);
+      }
+      s.onload=function(){done(true)}; s.onerror=function(){done(false)};
+      s.async=true; s.src=url; document.head.appendChild(s);
+    });
+  }
+
+  function round(){
+    return Promise.all(FILES.map(loadOne)).then(function(r){
+      var good=r.filter(function(x){return x.ok});
+      if(!good.length) throw new Error("fail");
+      var bytes=0,ms=0,ttfb=0,exact=true;
+      good.forEach(function(x){bytes+=x.bytes;ms=Math.max(ms,x.ms);if(x.ttfb&&(!ttfb||x.ttfb<ttfb))ttfb=x.ttfb;if(!x.exact)exact=false;});
+      return {mbps:(bytes*8)/(ms/1000)/1e6,ttfb:ttfb,exact:exact};
+    });
+  }
+
+  btn.addEventListener("click",function(){
+    if(btn.disabled) return;
+    btn.disabled=true; btn.classList.add("busy"); cta.textContent="測速中…";
+    msg.textContent="正在下載測試檔案…"; netInfo();
+    draw(0); lat.textContent="--";
+    if(!navigator.onLine){ finish(null,"目前沒有網路連線。"); return; }
+    round().then(function(a){ return round().then(function(b){ return a.mbps>=b.mbps?a:b; }); })
+    .then(function(r){
+      lat.textContent=r.ttfb?Math.round(r.ttfb):"--";
+      finish(r.mbps, r.exact?"測試完成。結果為下載速度的即時量測值。":"測試完成。瀏覽器未提供精確傳輸量，數值為估算。");
+    })
+    .catch(function(){ finish(null,"測速失敗，請檢查網路後再試一次。"); });
+  });
+
+  function finish(v,text){
+    btn.disabled=false; btn.classList.remove("busy");
+    cta.textContent="再測一次"; msg.textContent=text;
+    if(v!=null) tween(v); else draw(0);
+    netInfo();
+  }
+
+  draw(0);
+  if("serviceWorker" in navigator){window.addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){})});}
+})();
+</script>
+</body>
+</html>
